@@ -39,11 +39,7 @@ workout:
         ],
     }
 
-Incremental loads are driven by `synced_at`, not `start_time`: a workout that
-happened last week but only became visible to us today (a late-arriving
-record, or a watch that synced late) has `start_time` in the past and
-`synced_at` ~= now. Watermarking on `synced_at` is what makes `get_since()`
-correct for that case.
+
 """
 
 from abc import ABC, abstractmethod
@@ -56,12 +52,7 @@ DEFAULT_STATE_DIR = Path(__file__).resolve().parents[2] / ".state"
 
 
 class BaseFitnessClient(ABC):
-    """Common contract for pulling workout/user data from a source.
-
-    Subclasses implement `fetch_users`, `fetch_workouts`, `normalize_user`,
-    and `normalize_workout`. Watermark persistence (`get_since`/`set_since`)
-    is shared here so every source is incremental the same way.
-    """
+  
 
     #: short, filesystem-safe identifier, e.g. "synthetic", "strava"
     source_name: str = "base"
@@ -74,11 +65,7 @@ class BaseFitnessClient(ABC):
         return self.state_dir / f"{self.source_name}_{entity}_watermark.json"
 
     def get_since(self, entity: str = "workouts") -> Optional[datetime]:
-        """Return the cursor of the last successful extract for `entity`
-        ("workouts" or "users"), or None if never synced (implies a full
-        backfill). Each entity gets its own watermark -- workouts watermark
-        on synced_at, users watermark on updated_at, and they advance at
-        different rates."""
+    
         path = self._watermark_path(entity)
         if not path.exists():
             return None
@@ -87,29 +74,21 @@ class BaseFitnessClient(ABC):
         return datetime.fromisoformat(value) if value else None
 
     def set_since(self, watermark: datetime, entity: str = "workouts") -> None:
-        """Persist the new watermark for `entity`. Callers should only do this
-        after raw data has been durably written -- never before, or a crash
-        between "advance watermark" and "write data" silently drops records."""
+  
         self._watermark_path(entity).write_text(json.dumps({"watermark": watermark.isoformat()}))
 
     @abstractmethod
     def fetch_users(
         self, since: Optional[datetime] = None, until: Optional[datetime] = None
     ) -> Iterable[dict[str, Any]]:
-        """Yield raw (source-shaped, not-yet-normalized) user records updated
-        in (since, until]. `since=None` means full history; `until=None` means
-        no upper bound (live tail). Passing a concrete `until` puts the client
-        in bounded-replay mode: it must return the exact same records every
-        time for the same window, and must not mutate any external/simulated
-        state -- this is what backfill.sh relies on for idempotency."""
+     
         raise NotImplementedError
 
     @abstractmethod
     def fetch_workouts(
         self, since: Optional[datetime] = None, until: Optional[datetime] = None
     ) -> Iterable[dict[str, Any]]:
-        """Yield raw (source-shaped, not-yet-normalized) workout records with
-        synced_at in (since, until]. Same replay contract as `fetch_users`."""
+        """Yield raw  Same replay contract as `fetch_users`."""
         raise NotImplementedError
 
     @abstractmethod

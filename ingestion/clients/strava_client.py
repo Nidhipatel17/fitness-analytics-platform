@@ -1,27 +1,3 @@
-"""Real second source, added after the synthetic client proves the pipeline
-shape out. Implements the same BaseFitnessClient interface so extract.py and
-load_raw.py don't know or care which source they're pulling from -- that's
-the whole point of the abstraction.
-
-Strava's API differs from the synthetic one in ways worth calling out:
-  - Auth is per-athlete OAuth2 (short-lived access token + long-lived refresh
-    token), not a shared API key. `fetch_users` therefore only ever returns
-    the single athlete this client is authorized for -- Strava has no "list
-    all users" endpoint. Multi-user ingestion means one StravaClient instance
-    (one refresh token) per athlete upstream of this class, not a loop inside
-    it.
-  - Incremental pull uses Strava's native `after`/`before` epoch-seconds
-    query params on GET /athlete/activities, which line up with the
-    `since`/`until` watermark contract directly.
-  - The activity list endpoint does NOT include heart-rate/GPS samples --
-    those come from a separate per-activity GET /activities/{id}/streams
-    call, gated behind `fetch_streams` so a caller can skip it (each call
-    costs part of Strava's 100-req/15-min rate limit).
-
-Requires STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET / STRAVA_REFRESH_TOKEN in
-the environment. Nothing in this file talks to Strava unless a client
-actually calls fetch_users/fetch_workouts -- safe to import without creds set.
-"""
 
 from __future__ import annotations
 
@@ -121,9 +97,7 @@ class StravaClient(BaseFitnessClient):
     # ------------------------------------------------------------- users
 
     def fetch_users(self, since=None, until=None):
-        # Strava exposes only "me": no roster, no way to list other athletes.
-        # since/until are accepted for interface parity but don't apply --
-        # the athlete profile is cheap to refetch every run.
+ 
         athlete = self._get("/athlete")
         yield athlete
 
@@ -149,12 +123,7 @@ class StravaClient(BaseFitnessClient):
     # ---------------------------------------------------------- workouts
 
     def fetch_workouts(self, since=None, until=None):
-        # NOTE: unlike the synthetic client, since/until here bound Strava's
-        # own `after`/`before` params, which filter by *activity start time*
-        # -- Strava has no concept of a sync cursor. We stamp our own
-        # synced_at (this pull's wall-clock time) on the way out so
-        # downstream incremental loads still have a consistent field to
-        # watermark on across sources.
+
         pulled_at = datetime.now(timezone.utc).isoformat()
         params: dict[str, Any] = {"per_page": self.per_page, "page": 1}
         if since is not None:
