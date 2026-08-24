@@ -140,18 +140,31 @@ def run(
             logger.info("%s/%s: watermark advanced to %s", source, entity, max_synced_at)
 
 
+def _parse_cli_timestamp(value: str | None) -> datetime | None:
+    """Everything downstream (watermarks, client filtering) is timezone-aware
+    UTC. A CLI value with no offset -- e.g. --since 2026-08-01, the natural
+    way to type it -- would otherwise crash comparisons deep inside the
+    client with "can't compare offset-naive and offset-aware datetimes".
+    Assume UTC for a bare value rather than rejecting it, since this whole
+    pipeline is UTC-only anyway."""
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--source", choices=list(CLIENTS), default="synthetic")
     p.add_argument("--landing-zone", type=Path, default=Path("landing"))
     p.add_argument("--entity", choices=["users", "workouts", "all"], default="all")
-    p.add_argument("--since", type=str, default=None, help="ISO timestamp; backfill mode requires this with --until")
-    p.add_argument("--until", type=str, default=None, help="ISO timestamp; presence of --until triggers backfill/replay mode")
+    p.add_argument("--since", type=str, default=None, help="ISO timestamp (UTC assumed if no offset given); backfill mode requires this with --until")
+    p.add_argument("--until", type=str, default=None, help="ISO timestamp (UTC assumed if no offset given); presence of --until triggers backfill/replay mode")
     args = p.parse_args()
 
     entities = ("users", "workouts") if args.entity == "all" else (args.entity,)
-    since_override = datetime.fromisoformat(args.since) if args.since else None
-    until_override = datetime.fromisoformat(args.until) if args.until else None
+    since_override = _parse_cli_timestamp(args.since)
+    until_override = _parse_cli_timestamp(args.until)
     if until_override is not None and since_override is None:
         p.error("--until requires --since (bounded backfill window)")
 

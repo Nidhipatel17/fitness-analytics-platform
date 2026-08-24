@@ -8,6 +8,15 @@ file -- because a run was retried, or because backfill.sh replayed a date
 range -- updates existing rows in place instead of duplicating them. That's
 what makes the whole extract -> load_raw round-trip safe to re-run.
 
+The staging table itself can hold more than one row for the same natural
+key -- e.g. a duplicate-delivered workout landing in two different extract
+files under the same dt= partition, both picked up by one load. BigQuery's
+MERGE rejects a WHEN MATCHED clause that matches more than one source row
+to one target row, so the MERGE's USING clause dedupes staging down to one
+row per natural key (the most recently synced one) before joining -- see
+build_merge_sql(). The landing-zone files themselves are left untouched;
+this is a staging-only dedupe, not a rewrite of the raw log.
+
 --dry-run prints the MERGE SQL and the files it would load without touching
 BigQuery at all, so this is testable without live GCP credentials.
 """
@@ -17,6 +26,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -106,9 +117,23 @@ def build_merge_sql(project: str, dataset: str, entity: str, staging_table: str)
     insert_cols = ", ".join(all_cols)
     insert_vals = ", ".join(f"S.{c}" for c in all_cols)
     wf = cfg["watermark_field"]
+    partition_by = ", ".join(cfg["natural_key"])
+
+    # Collapse the staging table to one row per natural key (the most
+    # recently synced version) before joining, so a duplicate delivery that
+    # landed in two different files under the same dt= partition can't make
+    # WHEN MATCHED join to more than one source row for a single target row.
+    deduped_source = f"""(
+  SELECT * EXCEPT(_rn) FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY {partition_by} ORDER BY {wf} DESC) AS _rn
+    FROM `{project}.{dataset}.{staging_table}`
+  )
+  WHERE _rn = 1
+)""".strip()
+
     return f"""
 MERGE {target} T
-USING `{project}.{dataset}.{staging_table}` S
+USING {deduped_source} S
 ON {key_cond}
 WHEN MATCHED AND S.{wf} > T.{wf} THEN
   UPDATE SET {update_set}
@@ -158,28 +183,31 @@ def load_entity(
         schema=_bq_schema(cfg["schema"]),
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
     )
-    with open(_concat_files(files), "rb") as f:
-        job = client.load_table_from_file(f, staging_ref, job_config=job_config)
-    job.result()
-    logger.info("staged %d row(s) from %d file(s) into %s", job.output_rows, len(files), staging_ref)
+    scratch_path = _concat_files(files)
+    try:
+        with scratch_path.open("rb") as f:
+            job = client.load_table_from_file(f, staging_ref, job_config=job_config)
+        job.result()
+        logger.info("staged %d row(s) from %d file(s) into %s", job.output_rows, len(files), staging_ref)
 
-    query_job = client.query(sql)
-    query_job.result()
-    logger.info("merged staging -> %s (%s)", target_ref, query_job.num_dml_affected_rows)
-
-    client.delete_table(staging_ref, not_found_ok=True)
+        query_job = client.query(sql)
+        query_job.result()
+        logger.info("merged staging -> %s (%s)", target_ref, query_job.num_dml_affected_rows)
+    finally:
+        scratch_path.unlink(missing_ok=True)
+        client.delete_table(staging_ref, not_found_ok=True)
 
 
 def _concat_files(files: list[Path]) -> Path:
     """BigQuery's load API wants one file handle; landing files are already
-    JSONL, so just concatenate them into a scratch file for the load job."""
-    import tempfile
-
-    scratch = Path(tempfile.mkstemp(suffix=".jsonl")[1])
-    with scratch.open("w") as out:
+    JSONL, so just concatenate them into a scratch file for the load job.
+    mkstemp hands back an open OS-level fd -- os.fdopen takes ownership of it
+    so the `with` block closes it properly instead of leaking it."""
+    fd, path = tempfile.mkstemp(suffix=".jsonl")
+    with os.fdopen(fd, "w") as out:
         for f in files:
             out.write(f.read_text())
-    return scratch
+    return Path(path)
 
 
 def main() -> None:
