@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
-from .base_client import BaseFitnessClient, DEFAULT_STATE_DIR
+from .base_client import DEFAULT_STATE_DIR, BaseFitnessClient
 
 TOKEN_URL = "https://www.strava.com/oauth/token"
 API_BASE = "https://www.strava.com/api/v3"
@@ -34,13 +34,13 @@ class StravaClient(BaseFitnessClient):
 
     def __init__(
         self,
-        client_id: Optional[str] = None,
-        client_secret: Optional[str] = None,
-        refresh_token: Optional[str] = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        refresh_token: str | None = None,
         fetch_streams: bool = True,
         per_page: int = 100,
         state_dir: Path | str = DEFAULT_STATE_DIR,
-        session: Optional[requests.Session] = None,
+        session: requests.Session | None = None,
     ):
         super().__init__(state_dir)
         self.client_id = client_id or os.environ.get("STRAVA_CLIENT_ID")
@@ -49,7 +49,7 @@ class StravaClient(BaseFitnessClient):
         self.fetch_streams = fetch_streams
         self.per_page = per_page
         self.session = session or requests.Session()
-        self._access_token: Optional[str] = None
+        self._access_token: str | None = None
         self._access_token_expires_at: float = 0.0
 
     # ------------------------------------------------------------- auth
@@ -79,7 +79,7 @@ class StravaClient(BaseFitnessClient):
         self.refresh_token = payload.get("refresh_token", self.refresh_token)
         return self._access_token
 
-    def _get(self, path: str, params: Optional[dict[str, Any]] = None) -> Any:
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         token = self._ensure_access_token()
         url = f"{API_BASE}{path}"
         for attempt in range(5):
@@ -107,11 +107,13 @@ class StravaClient(BaseFitnessClient):
         if missing:
             raise ValueError(f"malformed strava athlete record: missing {missing}")
         weight_kg = raw.get("weight")  # only present if athlete shared it
-        updated_at = raw.get("updated_at") or datetime.now(timezone.utc).isoformat()
+        updated_at = raw.get("updated_at") or datetime.now(UTC).isoformat()
         return {
             "user_id": f"strava-{raw['id']}",
             "source": self.source_name,
-            "display_name": " ".join(filter(None, [raw.get("firstname"), raw.get("lastname")])) or f"Athlete {raw['id']}",
+            "display_name": (
+                " ".join(filter(None, [raw.get("firstname"), raw.get("lastname")])) or f"Athlete {raw['id']}"
+            ),
             "email": raw.get("email") or f"strava-{raw['id']}@unknown.example",
             "age": None,  # Strava doesn't expose birthdate via this scope
             "weight_kg": float(weight_kg) if weight_kg else None,
@@ -124,7 +126,7 @@ class StravaClient(BaseFitnessClient):
 
     def fetch_workouts(self, since=None, until=None):
 
-        pulled_at = datetime.now(timezone.utc).isoformat()
+        pulled_at = datetime.now(UTC).isoformat()
         params: dict[str, Any] = {"per_page": self.per_page, "page": 1}
         if since is not None:
             params["after"] = int(since.timestamp())
@@ -165,8 +167,8 @@ class StravaClient(BaseFitnessClient):
 
         start = datetime.fromisoformat(raw["start_date"].replace("Z", "+00:00"))
         end = start.timestamp() + float(raw["elapsed_time"])
-        end_iso = datetime.fromtimestamp(end, tz=timezone.utc).isoformat()
-        synced_at = raw.get("_synced_at") or datetime.now(timezone.utc).isoformat()
+        end_iso = datetime.fromtimestamp(end, tz=UTC).isoformat()
+        synced_at = raw.get("_synced_at") or datetime.now(UTC).isoformat()
 
         return {
             "workout_id": f"strava-{raw['id']}",
@@ -191,7 +193,7 @@ class StravaClient(BaseFitnessClient):
         n = len(times)
         samples = []
         for i in range(n):
-            ts = datetime.fromtimestamp(start.timestamp() + times[i], tz=timezone.utc).isoformat()
+            ts = datetime.fromtimestamp(start.timestamp() + times[i], tz=UTC).isoformat()
             lat, lon = (latlng[i][0], latlng[i][1]) if i < len(latlng) else (None, None)
             samples.append({
                 "ts": ts,

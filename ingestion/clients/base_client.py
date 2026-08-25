@@ -42,11 +42,12 @@ workout:
 
 """
 
-from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Iterable, Optional
 import json
+from abc import ABC, abstractmethod
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 DEFAULT_STATE_DIR = Path(__file__).resolve().parents[2] / ".state"
 
@@ -64,7 +65,7 @@ class BaseFitnessClient(ABC):
     def _watermark_path(self, entity: str) -> Path:
         return self.state_dir / f"{self.source_name}_{entity}_watermark.json"
 
-    def get_since(self, entity: str = "workouts") -> Optional[datetime]:
+    def get_since(self, entity: str = "workouts") -> datetime | None:
     
         path = self._watermark_path(entity)
         if not path.exists():
@@ -79,14 +80,14 @@ class BaseFitnessClient(ABC):
 
     @abstractmethod
     def fetch_users(
-        self, since: Optional[datetime] = None, until: Optional[datetime] = None
+        self, since: datetime | None = None, until: datetime | None = None
     ) -> Iterable[dict[str, Any]]:
      
         raise NotImplementedError
 
     @abstractmethod
     def fetch_workouts(
-        self, since: Optional[datetime] = None, until: Optional[datetime] = None
+        self, since: datetime | None = None, until: datetime | None = None
     ) -> Iterable[dict[str, Any]]:
         """Yield raw  Same replay contract as `fetch_users`."""
         raise NotImplementedError
@@ -103,4 +104,4 @@ class BaseFitnessClient(ABC):
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)

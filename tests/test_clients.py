@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -10,17 +10,17 @@ from ingestion.clients.synthetic_client import SyntheticClient
 
 
 def make_client(tmp_path, **kwargs):
-    defaults = dict(
-        num_users=5,
-        new_workouts_per_fetch=10,
-        malformed_rate=0.0,
-        anomaly_rate=0.0,
-        duplicate_rate=0.0,
-        late_arrival_rate=0.0,
-        seed=42,
-        state_dir=tmp_path / "state",
-        store_path=tmp_path / "state" / "backend.json",
-    )
+    defaults = {
+        "num_users": 5,
+        "new_workouts_per_fetch": 10,
+        "malformed_rate": 0.0,
+        "anomaly_rate": 0.0,
+        "duplicate_rate": 0.0,
+        "late_arrival_rate": 0.0,
+        "seed": 42,
+        "state_dir": tmp_path / "state",
+        "store_path": tmp_path / "state" / "backend.json",
+    }
     defaults.update(kwargs)
     return SyntheticClient(**defaults)
 
@@ -49,6 +49,32 @@ def test_user_watermark_only_returns_evolved_users(tmp_path):
     # every returned user must have been touched strictly after the watermark
     for u in second_batch:
         assert datetime.fromisoformat(u["updated_at"]) > since
+
+
+# ------------------------------------------------------------ friendships
+
+
+def test_friendships_are_symmetric_and_exclude_self(tmp_path):
+    client = make_client(tmp_path, num_users=10)
+    friendships = list(client.fetch_friendships(since=None))
+    assert len(friendships) > 0
+
+    edges = {(f["user_id"], f["friend_user_id"]) for f in friendships}
+    for user_id, friend_id in edges:
+        assert user_id != friend_id, "a user should never be their own friend"
+        assert (friend_id, user_id) in edges, "friendships must be symmetric"
+
+    for f in friendships:
+        normalized = client.normalize_friendship(f)
+        assert normalized["user_id"] and normalized["friend_user_id"]
+
+
+def test_friendships_are_static_across_calls(tmp_path):
+    client = make_client(tmp_path, num_users=10)
+    first = {(f["user_id"], f["friend_user_id"]) for f in client.fetch_friendships(since=None)}
+    client.fetch_users(since=None)  # live-mode call, may evolve users -- shouldn't touch friendships
+    second = {(f["user_id"], f["friend_user_id"]) for f in client.fetch_friendships(since=None)}
+    assert first == second
 
 
 # ---------------------------------------------------------------- workouts
@@ -133,7 +159,7 @@ def test_bounded_replay_is_idempotent_and_does_not_mutate_backend(tmp_path):
     seed_client = make_client(tmp_path, new_workouts_per_fetch=15, late_arrival_rate=0.5)
     seed_client.fetch_workouts(since=None)  # populate history, including late-arriving records
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     since = now - timedelta(days=30)
     until = now + timedelta(days=1)
 
@@ -153,7 +179,7 @@ def test_bounded_replay_is_idempotent_and_does_not_mutate_backend(tmp_path):
 def test_bounded_replay_respects_window_bounds(tmp_path):
     client = make_client(tmp_path, new_workouts_per_fetch=10)
     client.fetch_workouts(since=None)
-    far_future_since = datetime.now(timezone.utc) + timedelta(days=365)
+    far_future_since = datetime.now(UTC) + timedelta(days=365)
     far_future_until = far_future_since + timedelta(days=1)
     empty = list(client.fetch_workouts(since=far_future_since, until=far_future_until))
     assert empty == []

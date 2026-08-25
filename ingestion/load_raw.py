@@ -24,12 +24,10 @@ BigQuery at all, so this is testable without live GCP credentials.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Iterable
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("load_raw")
@@ -68,6 +66,13 @@ USERS_SCHEMA = [
     {"name": "updated_at", "type": "TIMESTAMP", "mode": "REQUIRED"},
 ]
 
+FRIENDSHIPS_SCHEMA = [
+    {"name": "user_id", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "friend_user_id", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "source", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "created_at", "type": "TIMESTAMP", "mode": "REQUIRED"},
+]
+
 ENTITY_CONFIG = {
     "workouts": {
         "table": "raw_workouts",
@@ -82,6 +87,13 @@ ENTITY_CONFIG = {
         "natural_key": ["user_id", "source"],
         "watermark_field": "updated_at",
         "partition_field": "updated_at",
+    },
+    "friendships": {
+        "table": "raw_friendships",
+        "schema": FRIENDSHIPS_SCHEMA,
+        "natural_key": ["user_id", "friend_user_id"],
+        "watermark_field": "created_at",
+        "partition_field": "created_at",
     },
 }
 
@@ -163,6 +175,7 @@ def load_entity(
         return
 
     from google.cloud import bigquery
+    from google.cloud.exceptions import NotFound
 
     client = bigquery.Client(project=project)
     dataset_ref = f"{project}.{dataset}"
@@ -171,7 +184,7 @@ def load_entity(
     target_ref = f"{dataset_ref}.{cfg['table']}"
     try:
         client.get_table(target_ref)
-    except Exception:
+    except NotFound:
         table = bigquery.Table(target_ref, schema=_bq_schema(cfg["schema"]))
         table.time_partitioning = bigquery.TimePartitioning(field=cfg["partition_field"])
         client.create_table(table)
@@ -214,7 +227,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--landing-zone", type=Path, default=Path("landing"))
     p.add_argument("--source", default="synthetic")
-    p.add_argument("--entity", choices=["users", "workouts", "all"], default="all")
+    p.add_argument("--entity", choices=["users", "workouts", "friendships", "all"], default="all")
     p.add_argument("--dt", default=None, help="specific dt=YYYY-MM-DD partition; default loads all available")
     p.add_argument("--project", default="fitness-analytics-dev")
     p.add_argument("--dataset", default="raw")

@@ -41,7 +41,7 @@ overlapping runs of a pipeline whose tasks weren't designed for it.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
@@ -73,7 +73,7 @@ with DAG(
     description="extract -> load_raw -> dbt build -> quality checks",
     default_args=default_args,
     schedule="@daily",
-    start_date=datetime(2026, 8, 1),
+    start_date=datetime(2026, 8, 1, tzinfo=UTC),
     catchup=False,
     max_active_runs=1,
     params={"project": "fitness-analytics-506523", "dataset": "raw"},

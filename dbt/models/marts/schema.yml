@@ -59,6 +59,24 @@ models:
           - duration_under_hours:
               max_hours: 24
 
+  - name: leaderboard
+    description: Grain -- one row per (user_id, member_user_id), where member_user_id ranges over user_id's friends plus themselves. Self-join of stg_friendships back through dim_user.
+    columns:
+      - name: user_id
+        tests: [not_null]
+      - name: member_user_id
+        tests: [not_null]
+      - name: rank_by_distance
+        tests: [not_null]
+
+  - name: personal_records
+    description: Grain -- one row per (user_id, workout_type), this user's all-time bests for that exercise type.
+    columns:
+      - name: user_id
+        tests: [not_null]
+      - name: workout_type
+        tests: [not_null]
+
   - name: fact_daily_metrics
     description: Grain -- one row per user per calendar day, dense (includes zero-workout days).
     columns:

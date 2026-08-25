@@ -2,12 +2,14 @@ version: 2
 
 sources:
   - name: raw
-    schema: raw
+    schema: "{{ var('raw_dataset', 'raw') }}"
     description: >
       Loaded by ingestion/load_raw.py via MERGE upsert on natural key -- see
       that file's docstring. Freshness here backstops quality/freshness_check.py:
       if a source stops syncing, dbt source freshness catches it in `dbt build`
-      output, not just in the standalone quality script.
+      output, not just in the standalone quality script. Schema is a var, not
+      hardcoded, so CI can point at a CI-only ci_raw dataset (via --vars)
+      without touching the raw dataset used for manual dev/testing.
     tables:
       - name: raw_workouts
         loaded_at_field: synced_at
@@ -33,6 +35,15 @@ sources:
           - name: updated_at
             tests: [not_null]
 
+      - name: raw_friendships
+        description: Synthetic-only social graph, static after bootstrap -- see SyntheticClient._generate_friendships.
+        loaded_at_field: created_at
+        columns:
+          - name: user_id
+            tests: [not_null]
+          - name: friend_user_id
+            tests: [not_null]
+
 models:
   - name: stg_workouts
     description: One row per workout, deduped on workout_id keeping the most recently synced version.
@@ -54,4 +65,12 @@ models:
       - name: source_system
         tests: [not_null]
       - name: updated_at
+        tests: [not_null]
+
+  - name: stg_friendships
+    description: One row per (user_id, friend_user_id) edge. Already symmetric at the source -- see SyntheticClient._generate_friendships.
+    columns:
+      - name: user_id
+        tests: [not_null]
+      - name: friend_user_id
         tests: [not_null]

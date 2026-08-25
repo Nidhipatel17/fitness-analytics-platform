@@ -27,26 +27,41 @@ import json
 import logging
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ingestion.clients.base_client import BaseFitnessClient
-from ingestion.clients.synthetic_client import SyntheticClient
 from ingestion.clients.strava_client import StravaClient
+from ingestion.clients.synthetic_client import SyntheticClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("extract")
 
 CLIENTS = {"synthetic": SyntheticClient, "strava": StravaClient}
 
+# friendships is synthetic-only (see SyntheticClient.fetch_friendships) --
+# not every source needs to support every entity, so this is keyed
+# separately rather than forced into a signature every client must match.
+ENTITY_CONFIG = {
+    "users": {"fetch": "fetch_users", "normalize": "normalize_user", "watermark_field": "updated_at"},
+    "workouts": {"fetch": "fetch_workouts", "normalize": "normalize_workout", "watermark_field": "synced_at"},
+    "friendships": {"fetch": "fetch_friendships", "normalize": "normalize_friendship", "watermark_field": "created_at"},
+}
+ENTITY_SOURCE_SUPPORT = {
+    "users": set(CLIENTS),
+    "workouts": set(CLIENTS),
+    "friendships": {"synthetic"},
+}
 
-def build_client(source: str) -> BaseFitnessClient:
+
+def build_client(source: str, **client_kwargs: Any) -> BaseFitnessClient:
     if source not in CLIENTS:
         raise ValueError(f"unknown source {source!r}, choose from {list(CLIENTS)}")
-    return CLIENTS[source]()
+    return CLIENTS[source](**client_kwargs)
 
 
 def _dt_of(record: dict[str, Any], field_name: str) -> str:
@@ -66,7 +81,7 @@ def _run_id(since: datetime | None, until: datetime | None) -> tuple[str, bool]:
     if until is not None:
         since_s = since.isoformat() if since else "epoch"
         return f"backfill-{since_s}-{until.isoformat()}".replace(":", ""), True
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.strftime("%Y%m%dT%H%M%S%f"), False
 
 
@@ -78,11 +93,12 @@ def extract_entity(
     until: datetime | None,
 ) -> tuple[int, int, datetime | None]:
     """Returns (valid_count, rejected_count, max_synced_at_seen)."""
-    fetch = client.fetch_workouts if entity == "workouts" else client.fetch_users
-    normalize = client.normalize_workout if entity == "workouts" else client.normalize_user
-    watermark_field = "synced_at" if entity == "workouts" else "updated_at"
+    cfg = ENTITY_CONFIG[entity]
+    fetch = getattr(client, cfg["fetch"])
+    normalize = getattr(client, cfg["normalize"])
+    watermark_field = cfg["watermark_field"]
 
-    run_id, is_backfill = _run_id(since, until)
+    run_id, _ = _run_id(since, until)
     valid_by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
     rejects_by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
     max_synced_at: datetime | None = None
@@ -98,7 +114,7 @@ def extract_entity(
             normalized = normalize(raw)
             valid_by_date[_dt_of(normalized, watermark_field)].append(normalized)
         except ValueError as exc:
-            dt = ts_raw[:10] if ts_raw else datetime.now(timezone.utc).date().isoformat()
+            dt = ts_raw[:10] if ts_raw else datetime.now(UTC).date().isoformat()
             rejects_by_date[dt].append({"error": str(exc), "raw": raw})
             logger.warning("rejected %s record: %s", entity, exc)
 
@@ -123,8 +139,9 @@ def run(
     entities: Iterable[str] = ("users", "workouts"),
     since_override: datetime | None = None,
     until_override: datetime | None = None,
+    client_kwargs: dict[str, Any] | None = None,
 ) -> None:
-    client = build_client(source)
+    client = build_client(source, **(client_kwargs or {}))
     is_backfill = until_override is not None
 
     for entity in entities:
@@ -150,25 +167,58 @@ def _parse_cli_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
     dt = datetime.fromisoformat(value)
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--source", choices=list(CLIENTS), default="synthetic")
     p.add_argument("--landing-zone", type=Path, default=Path("landing"))
-    p.add_argument("--entity", choices=["users", "workouts", "all"], default="all")
-    p.add_argument("--since", type=str, default=None, help="ISO timestamp (UTC assumed if no offset given); backfill mode requires this with --until")
-    p.add_argument("--until", type=str, default=None, help="ISO timestamp (UTC assumed if no offset given); presence of --until triggers backfill/replay mode")
+    p.add_argument("--entity", choices=["users", "workouts", "friendships", "all"], default="all")
+    p.add_argument(
+        "--since", type=str, default=None,
+        help="ISO timestamp (UTC assumed if no offset given); backfill mode requires this with --until",
+    )
+    p.add_argument(
+        "--until", type=str, default=None,
+        help="ISO timestamp (UTC assumed if no offset given); presence of --until triggers backfill/replay mode",
+    )
+    p.add_argument("--seed", type=int, default=None, help="synthetic source only: RNG seed for reproducible generation")
+    p.add_argument("--malformed-rate", type=float, default=None, help="synthetic source only")
+    p.add_argument(
+        "--anomaly-rate", type=float, default=None,
+        help="synthetic source only; set to 0 for deterministic, anomaly-free seed data (e.g. in CI, where a "
+             "randomly-injected business-rule violation would make dbt test flaky rather than actually broken)",
+    )
+    p.add_argument("--duplicate-rate", type=float, default=None, help="synthetic source only")
+    p.add_argument("--late-arrival-rate", type=float, default=None, help="synthetic source only")
     args = p.parse_args()
 
+    # "all" means "every entity this source supports" -- friendships is
+    # synthetic-only, so it's opt-in via --entity friendships explicitly
+    # rather than silently included/excluded depending on --source.
     entities = ("users", "workouts") if args.entity == "all" else (args.entity,)
+    unsupported = [e for e in entities if args.source not in ENTITY_SOURCE_SUPPORT[e]]
+    if unsupported:
+        p.error(f"--source {args.source} doesn't support entity/entities: {unsupported}")
+
     since_override = _parse_cli_timestamp(args.since)
     until_override = _parse_cli_timestamp(args.until)
     if until_override is not None and since_override is None:
         p.error("--until requires --since (bounded backfill window)")
 
-    run(args.source, args.landing_zone, entities, since_override, until_override)
+    rate_flags = {
+        "seed": args.seed,
+        "malformed_rate": args.malformed_rate,
+        "anomaly_rate": args.anomaly_rate,
+        "duplicate_rate": args.duplicate_rate,
+        "late_arrival_rate": args.late_arrival_rate,
+    }
+    given_rate_flags = {k: v for k, v in rate_flags.items() if v is not None}
+    if given_rate_flags and args.source != "synthetic":
+        p.error(f"--source {args.source} doesn't accept {list(given_rate_flags)} (synthetic-only)")
+
+    run(args.source, args.landing_zone, entities, since_override, until_override, client_kwargs=given_rate_flags)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,7 @@
+# What the ingestion service (extract.py, load_raw.py, quality/) actually
+# imports -- deliberately not the full requirements.txt, which also drags
+# in dbt-core and apache-airflow's dependency trees for a container that
+# never touches either. Keep this file and requirements.txt in sync by
+# hand; they're allowed to diverge on purpose.
+requests==2.32.3
+google-cloud-bigquery==3.25.0

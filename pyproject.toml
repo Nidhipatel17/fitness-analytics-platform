@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# TRY is deliberately excluded: TRY004 wants ValueError callsites rewritten
+# to TypeError, but this codebase uses ValueError specifically and
+# consistently as the "malformed record, reject it" signal that
+# ingestion/extract.py's `except ValueError` catches -- switching to
+# TypeError there would silently stop being caught and crash the run.
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "DTZ", "BLE", "RUF"]

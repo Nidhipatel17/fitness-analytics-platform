@@ -21,12 +21,12 @@ from __future__ import annotations
 import copy
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from .base_client import BaseFitnessClient, DEFAULT_STATE_DIR, utcnow
+from .base_client import DEFAULT_STATE_DIR, BaseFitnessClient, utcnow
 
 WORKOUT_TYPES = ["run", "ride", "swim", "strength", "walk", "hike", "rower"]
 FITNESS_GOALS = ["lose_weight", "build_endurance", "build_strength", "maintain"]
@@ -63,9 +63,9 @@ class SyntheticClient(BaseFitnessClient):
         anomaly_rate: float = 0.05,
         duplicate_rate: float = 0.10,
         late_arrival_rate: float = 0.15,
-        seed: Optional[int] = None,
+        seed: int | None = None,
         state_dir: Path | str = DEFAULT_STATE_DIR,
-        store_path: Optional[Path | str] = None,
+        store_path: Path | str | None = None,
     ):
         super().__init__(state_dir)
         self.num_users = num_users
@@ -86,7 +86,29 @@ class SyntheticClient(BaseFitnessClient):
             return json.loads(self.store_path.read_text())
         now = utcnow()
         users = [self._make_user(i, now) for i in range(self.num_users)]
-        return {"users": users, "workouts": [], "next_workout_seq": 0}
+        friendships = self._generate_friendships(users, now)
+        return {"users": users, "workouts": [], "friendships": friendships, "next_workout_seq": 0}
+
+    def _generate_friendships(self, users: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+        """Static at bootstrap, not incrementally synced like workouts/users
+        -- a synthetic social graph doesn't need to evolve for this
+        project's purposes. Symmetric: each edge is generated once, then
+        written both directions, so a leaderboard query never needs an OR
+        or a UNION to find "my friends"."""
+        user_ids = [u["user_id"] for u in users]
+        edges: set[tuple[str, str]] = set()
+        for uid in user_ids:
+            candidates = [u for u in user_ids if u != uid]
+            n_friends = min(self.rng.randint(3, 6), len(candidates))
+            for fid in self.rng.sample(candidates, n_friends):
+                edges.add(tuple(sorted((uid, fid))))
+
+        friendships = []
+        for a, b in edges:
+            ts = now.isoformat()
+            friendships.append({"user_id": a, "friend_user_id": b, "source": self.source_name, "created_at": ts})
+            friendships.append({"user_id": b, "friend_user_id": a, "source": self.source_name, "created_at": ts})
+        return friendships
 
     def _save_backend(self) -> None:
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +165,31 @@ class SyntheticClient(BaseFitnessClient):
             "height_cm": float(raw["height_cm"]),
             "fitness_goal": str(raw["fitness_goal"]),
             "updated_at": raw["updated_at"],
+        }
+
+    # ---------------------------------------------------------- friendships
+
+    def fetch_friendships(self, since=None, until=None) -> list[dict[str, Any]]:
+        """Not part of BaseFitnessClient's interface -- synthetic-only.
+        Strava has no comparable "friends" graph reachable through the API
+        surface this project pulls from, so this isn't something every
+        source could reasonably implement the same way. since/until use the
+        same _filter_window mechanism as fetch_users/fetch_workouts (keyed
+        on created_at) purely so extract.py can treat this as a uniform
+        third entity instead of a special case -- the backend list itself
+        is static after bootstrap either way."""
+        return self._filter_window(self.backend.get("friendships", []), "created_at", since, until)
+
+    def normalize_friendship(self, raw: dict[str, Any]) -> dict[str, Any]:
+        required = ["user_id", "friend_user_id", "created_at"]
+        missing = [f for f in required if f not in raw or raw[f] is None]
+        if missing:
+            raise ValueError(f"malformed friendship record: missing/null {missing}")
+        return {
+            "user_id": str(raw["user_id"]),
+            "friend_user_id": str(raw["friend_user_id"]),
+            "source": self.source_name,
+            "created_at": raw["created_at"],
         }
 
     # ------------------------------------------------------------- workouts
@@ -217,7 +264,7 @@ class SyntheticClient(BaseFitnessClient):
         self.last_batch_stats.anomalous += 1
         return w
 
-    def _maybe_duplicate_existing(self, now: datetime) -> Optional[dict[str, Any]]:
+    def _maybe_duplicate_existing(self, now: datetime) -> dict[str, Any] | None:
         if not self.backend["workouts"] or self.rng.random() >= self.duplicate_rate:
             return None
         dup = copy.deepcopy(self.rng.choice(self.backend["workouts"]))
@@ -281,7 +328,7 @@ class SyntheticClient(BaseFitnessClient):
     # ---------------------------------------------------------------- utils
 
     @staticmethod
-    def _filter_window(records: list[dict[str, Any]], field_name: str, since: Optional[datetime], until: Optional[datetime]):
+    def _filter_window(records: list[dict[str, Any]], field_name: str, since: datetime | None, until: datetime | None):
         out = []
         for r in records:
             ts = datetime.fromisoformat(r[field_name])
