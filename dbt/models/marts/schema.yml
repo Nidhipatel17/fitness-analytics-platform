@@ -1,0 +1,75 @@
+version: 2
+
+models:
+  - name: dim_user
+    description: SCD Type 2 -- one row per user per distinct version of their profile (weight/fitness_goal changes), built from the users_snapshot dbt snapshot.
+    columns:
+      - name: user_sk
+        tests: [not_null, unique]
+      - name: user_id
+        tests: [not_null]
+      - name: valid_from
+        tests: [not_null]
+      - name: valid_to
+        tests: [not_null]
+
+  - name: dim_date
+    description: Generated date spine, 2024-01-01 through one year past today.
+    columns:
+      - name: date_sk
+        tests: [not_null, unique]
+      - name: date_day
+        tests: [not_null, unique]
+
+  - name: dim_exercise_type
+    description: Static reference data, seeded from seeds/exercise_types.csv.
+    columns:
+      - name: exercise_type_sk
+        tests: [not_null, unique]
+      - name: workout_type
+        tests: [not_null, unique]
+
+  - name: fact_workout
+    description: Grain -- one row per workout.
+    columns:
+      - name: workout_sk
+        tests: [not_null, unique]
+      - name: workout_id
+        tests: [not_null, unique]
+      - name: user_id
+        tests: [not_null]
+      - name: user_sk
+        tests:
+          - relationships:
+              to: ref('dim_user')
+              field: user_sk
+      - name: exercise_type_sk
+        tests:
+          - relationships:
+              to: ref('dim_exercise_type')
+              field: exercise_type_sk
+      - name: workout_date_sk
+        tests:
+          - relationships:
+              to: ref('dim_date')
+              field: date_sk
+      - name: duration_minutes
+        tests:
+          - not_null
+          - duration_under_hours:
+              max_hours: 24
+
+  - name: fact_daily_metrics
+    description: Grain -- one row per user per calendar day, dense (includes zero-workout days).
+    columns:
+      - name: daily_metric_sk
+        tests: [not_null, unique]
+      - name: user_id
+        tests: [not_null]
+      - name: date_day
+        tests: [not_null]
+      - name: user_sk
+        tests:
+          - relationships:
+              to: ref('dim_user')
+              field: user_sk

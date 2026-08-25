@@ -1,0 +1,8 @@
+workout_type,category,is_cardio,met_value
+run,cardio,true,9.8
+ride,cardio,true,7.5
+swim,cardio,true,8.3
+walk,cardio,true,3.5
+hike,cardio,true,6.0
+strength,strength,false,5.0
+rower,cardio,true,7.0

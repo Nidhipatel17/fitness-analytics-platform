@@ -1,0 +1,25 @@
+name: fitness_analytics
+version: "1.0.0"
+config-version: 2
+
+profile: fitness_analytics
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  fitness_analytics:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: marts
+
+seeds:
+  fitness_analytics:
+    +schema: marts

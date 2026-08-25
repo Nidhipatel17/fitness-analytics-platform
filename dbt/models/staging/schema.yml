@@ -1,0 +1,57 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    description: >
+      Loaded by ingestion/load_raw.py via MERGE upsert on natural key -- see
+      that file's docstring. Freshness here backstops quality/freshness_check.py:
+      if a source stops syncing, dbt source freshness catches it in `dbt build`
+      output, not just in the standalone quality script.
+    tables:
+      - name: raw_workouts
+        loaded_at_field: synced_at
+        freshness:
+          warn_after: { count: 24, period: hour }
+          error_after: { count: 48, period: hour }
+        columns:
+          - name: workout_id
+            tests: [not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: synced_at
+            tests: [not_null]
+
+      - name: raw_users
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: { count: 48, period: hour }
+          error_after: { count: 96, period: hour }
+        columns:
+          - name: user_id
+            tests: [not_null]
+          - name: updated_at
+            tests: [not_null]
+
+models:
+  - name: stg_workouts
+    description: One row per workout, deduped on workout_id keeping the most recently synced version.
+    columns:
+      - name: workout_id
+        tests: [not_null, unique]
+      - name: user_id
+        tests: [not_null]
+      - name: start_time
+        tests: [not_null]
+      - name: end_time
+        tests: [not_null]
+
+  - name: stg_users
+    description: One row per (user_id, source_system), deduped keeping the most recently updated version.
+    columns:
+      - name: user_id
+        tests: [not_null]
+      - name: source_system
+        tests: [not_null]
+      - name: updated_at
+        tests: [not_null]

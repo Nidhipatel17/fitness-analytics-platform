@@ -1,0 +1,23 @@
+# dbt profiles.yml lives outside the repo (~/.dbt/profiles.yml) or wherever
+# --profiles-dir points -- never commit real credentials. Copy this there
+# and fill in your own project/dataset.
+fitness_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth
+      project: fitness-analytics-dev
+      dataset: dbt_dev
+      threads: 4
+      timeout_seconds: 300
+      location: US
+    prod:
+      type: bigquery
+      method: service-account
+      project: fitness-analytics-prod
+      dataset: analytics
+      keyfile: /path/to/service-account.json
+      threads: 8
+      timeout_seconds: 300
+      location: US
