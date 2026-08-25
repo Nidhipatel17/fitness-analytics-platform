@@ -8,4 +8,5 @@ landing/
 dbt/target/
 dbt/logs/
 dbt/dbt_packages/
+orchestration/logs/
 .env

@@ -1,0 +1,108 @@
+# Local Airflow, for running orchestration/dags/fitness_pipeline_dag.py
+# before touching Cloud Composer. LocalExecutor, not the CeleryExecutor
+# stack Airflow's own docs default to (redis + worker + flower + triggerer)
+# -- this project's task volume doesn't need distributed workers, and
+# LocalExecutor needs nothing beyond Postgres + webserver + scheduler.
+#
+# One-time setup before `docker compose up`:
+#   1. On Linux only: echo "AIRFLOW_UID=$(id -u)" > .env, then uncomment
+#      the `user:` line below. This maps container processes to your host
+#      UID so bind-mounted files (./orchestration/logs) aren't root-owned.
+#      Skip this on macOS/Windows -- Docker Desktop's VM already handles
+#      that permission mapping, and forcing a host UID here actually
+#      breaks airflow-init: the image's own `airflow` user is UID 50000
+#      with a real passwd entry, but an arbitrary host UID (e.g. a Mac
+#      user's 501) has no matching entry in the container's user database,
+#      and Airflow's CLI calls getuser() during startup and crashes with
+#      "user has no username" before it ever gets to run anything.
+#   2. Make sure `gcloud auth application-default login` has been run on
+#      the host (mounted read-only into the containers below) and that
+#      ~/.dbt/profiles.yml exists (copy dbt/profiles.yml.example there and
+#      fill in your real project -- see that file's comments).
+#
+# The whole repo is bind-mounted to /opt/airflow/project, matching
+# REPO_ROOT in fitness_pipeline_dag.py -- so landing/ and .state/ written
+# by tasks running *inside* the container show up on the host too, exactly
+# like running scripts/run_pipeline.sh directly.
+#
+# _PIP_ADDITIONAL_REQUIREMENTS installs this project's deps (dbt, the
+# BigQuery client, requests) into the Airflow image at container start.
+# That's the simple path for local dev; it's genuinely not great for
+# production -- dbt's own dependency tree can clash with Airflow's pinned
+# versions, which is exactly why tools like Astronomer Cosmos run dbt in an
+# isolated venv instead. A dedicated image (this project's Week 4 Dockerfile)
+# is the real fix; not worth it yet for a local dev DAG.
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.2-python3.11
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    _PIP_ADDITIONAL_REQUIREMENTS: "dbt-bigquery==1.8.3 google-cloud-bigquery==3.25.0 requests==2.32.3"
+    GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/gcp/application_default_credentials.json
+    DBT_PROFILES_DIR: /opt/airflow/dbt_profiles
+  volumes:
+    - ./orchestration/dags:/opt/airflow/dags
+    - ./orchestration/logs:/opt/airflow/logs
+    - .:/opt/airflow/project
+    - ${HOME}/.config/gcloud:/opt/airflow/gcp:ro
+    - ${HOME}/.dbt:/opt/airflow/dbt_profiles:ro
+  # user: "${AIRFLOW_UID}:0"   # Linux only -- see setup note above
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username admin --password admin \
+          --firstname admin --lastname admin \
+          --role Admin --email admin@example.com || true
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-db-volume:
