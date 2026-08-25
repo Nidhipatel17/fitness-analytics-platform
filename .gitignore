@@ -10,3 +10,5 @@ dbt/logs/
 dbt/dbt_packages/
 orchestration/logs/
 .env
+README.private.md
+dashboards/looker_studio_link.private.md
